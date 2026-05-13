@@ -10,6 +10,7 @@ Uses hierarchical retrieval:
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -563,7 +564,22 @@ async def run_reflect_agent(
         if include_recall:
             forced_sequence.append("recall")
 
-        if iteration < len(forced_sequence):
+        # Escape hatch for inference engines whose tool-call parser breaks
+        # when tool_choice forces a specific function name. vLLM (as of v0.20.2
+        # / nightly 2026-05-13) has open issue #35936 + #33965: forced
+        # tool_choice ("required" and named-function modes) bypasses the
+        # configured --tool-call-parser and uses JSON-only validation. For
+        # models that emit XML-style tool calls (Qwen3 family with qwen3_coder
+        # parser), this silently returns tool_calls=[] while finish_reason
+        # still reports "tool_calls". Set
+        # HINDSIGHT_API_REFLECT_DISABLE_FORCED_TOOL_CHOICE=true to fall back
+        # to tool_choice="auto" for every iteration; the model still calls
+        # retrieval tools when given factual queries, just without API-level
+        # forcing.
+        disable_forced = os.getenv(
+            "HINDSIGHT_API_REFLECT_DISABLE_FORCED_TOOL_CHOICE", ""
+        ).lower() in ("true", "1", "yes")
+        if not disable_forced and iteration < len(forced_sequence):
             iter_tool_choice: str | dict = {"type": "function", "function": {"name": forced_sequence[iteration]}}
         else:
             iter_tool_choice = "auto"
