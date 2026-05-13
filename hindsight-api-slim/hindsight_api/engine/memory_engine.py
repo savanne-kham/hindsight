@@ -686,7 +686,7 @@ class MemoryEngine(MemoryEngineInterface):
             api_key=retain_api_key,
             base_url=retain_base_url,
             model=retain_model,
-            extra_body=config.llm_extra_body,
+            extra_body=config.retain_llm_extra_body or config.llm_extra_body,
             default_headers=config.llm_default_headers,
             litellmrouter_config=config.retain_llm_litellmrouter_config or config.llm_litellmrouter_config,
         )
@@ -712,7 +712,7 @@ class MemoryEngine(MemoryEngineInterface):
             api_key=reflect_api_key,
             base_url=reflect_base_url,
             model=reflect_model,
-            extra_body=config.llm_extra_body,
+            extra_body=config.reflect_llm_extra_body or config.llm_extra_body,
             default_headers=config.llm_default_headers,
             litellmrouter_config=config.reflect_llm_litellmrouter_config or config.llm_litellmrouter_config,
         )
@@ -738,7 +738,7 @@ class MemoryEngine(MemoryEngineInterface):
             api_key=consolidation_api_key,
             base_url=consolidation_base_url,
             model=consolidation_model,
-            extra_body=config.llm_extra_body,
+            extra_body=config.consolidation_llm_extra_body or config.llm_extra_body,
             default_headers=config.llm_default_headers,
             litellmrouter_config=config.consolidation_llm_litellmrouter_config or config.llm_litellmrouter_config,
         )
