@@ -1043,13 +1043,33 @@ def _build_request_body(llm_config, config, prompt: str, user_message: str, resp
     if llm_config.provider == "openai" and llm_config._provider_impl.openai_service_tier:
         request_body["service_tier"] = llm_config._provider_impl.openai_service_tier
 
-    # Add response_format (JSON schema)
+    # Add response_format based on HINDSIGHT_API_RETAIN_RESPONSE_FORMAT setting.
+    # Use "json_object" or "none" for providers that reject json_schema (e.g. DeepSeek via opencode-go).
+    response_fmt = getattr(config, "retain_response_format", "json_schema")
     if hasattr(response_schema, "model_json_schema"):
         schema = response_schema.model_json_schema()
-        request_body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": "facts", "schema": schema},
-        }
+        if response_fmt == "json_schema":
+            request_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "facts", "schema": schema},
+            }
+        elif response_fmt == "json_object":
+            # Inject schema into system prompt and rely on json_object grammar enforcement.
+            import json as _json
+
+            schema_hint = f"\n\nYou must respond with valid JSON matching this schema:\n{_json.dumps(schema, indent=2, ensure_ascii=False)}"
+            request_body["messages"][0]["content"] += schema_hint
+            # Ensure the word "json" appears in the user message (required by some providers).
+            user_content = request_body["messages"][-1]["content"]
+            if "json" not in user_content.lower():
+                request_body["messages"][-1]["content"] = "Return valid JSON. " + user_content
+            request_body["response_format"] = {"type": "json_object"}
+        # For "none": inject schema hint only, no response_format header.
+        elif response_fmt == "none":
+            import json as _json
+
+            schema_hint = f"\n\nYou must respond with valid JSON matching this schema:\n{_json.dumps(schema, indent=2, ensure_ascii=False)}"
+            request_body["messages"][0]["content"] += schema_hint
 
     return request_body
 

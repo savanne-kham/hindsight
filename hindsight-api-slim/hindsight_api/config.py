@@ -336,6 +336,7 @@ ENV_LLM_GEMINI_SAFETY_SETTINGS = "HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS"
 
 # Retain settings
 ENV_RETAIN_MAX_COMPLETION_TOKENS = "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"
+ENV_RETAIN_RESPONSE_FORMAT = "HINDSIGHT_API_RETAIN_RESPONSE_FORMAT"
 ENV_RETAIN_CHUNK_SIZE = "HINDSIGHT_API_RETAIN_CHUNK_SIZE"
 ENV_RETAIN_EXTRACT_CAUSAL_LINKS = "HINDSIGHT_API_RETAIN_EXTRACT_CAUSAL_LINKS"
 ENV_RETAIN_EXTRACTION_MODE = "HINDSIGHT_API_RETAIN_EXTRACTION_MODE"
@@ -483,7 +484,6 @@ PROVIDER_DEFAULT_MODELS = {
     "minimax": "MiniMax-M2.7",
     "deepseek": "deepseek-v4-flash",
     "zai": "glm-4.5-flash",
-    "opencode-go": "deepseek-v4-flash",
     "ollama": "gemma3:12b",
     "ollama-cloud": "gemma3:12b",
     "llamacpp": "gemma-4-e2b-it",
@@ -602,7 +602,9 @@ DEFAULT_LINK_EXPANSION_PER_ENTITY_LIMIT = 200  # Max target units per entity in 
 DEFAULT_LINK_EXPANSION_TIMEOUT = 10.0  # Timeout (seconds) for entity expansion query
 
 # Retain settings
-DEFAULT_RETAIN_MAX_COMPLETION_TOKENS = 64000  # Max tokens for fact extraction LLM call
+DEFAULT_RETAIN_MAX_COMPLETION_TOKENS = 4000  # Max tokens for fact extraction LLM call
+DEFAULT_RETAIN_RESPONSE_FORMAT = "json_schema"  # Response format: "json_schema", "json_object", or "none"
+RETAIN_RESPONSE_FORMATS = ("json_schema", "json_object", "none")  # Allowed response format values
 DEFAULT_RETAIN_CHUNK_SIZE = 3000  # Max chars per chunk for fact extraction
 DEFAULT_RETAIN_EXTRACT_CAUSAL_LINKS = True  # Extract causal links between facts
 DEFAULT_RETAIN_EXTRACTION_MODE = "concise"  # Extraction mode: "concise", "verbose", or "custom"
@@ -823,6 +825,18 @@ def _validate_extraction_mode(mode: str) -> str:
         )
         return DEFAULT_RETAIN_EXTRACTION_MODE
     return mode_lower
+
+
+def _validate_retain_response_format(fmt: str) -> str:
+    """Validate and normalize retain response format."""
+    fmt_lower = fmt.lower()
+    if fmt_lower not in RETAIN_RESPONSE_FORMATS:
+        logger.warning(
+            f"Invalid retain response format '{fmt}', must be one of {RETAIN_RESPONSE_FORMATS}. "
+            f"Defaulting to '{DEFAULT_RETAIN_RESPONSE_FORMAT}'."
+        )
+        return DEFAULT_RETAIN_RESPONSE_FORMAT
+    return fmt_lower
 
 
 def _validate_recall_budget_function(function: str) -> str:
@@ -1073,6 +1087,7 @@ class HindsightConfig:
 
     # Retain settings
     retain_max_completion_tokens: int
+    retain_response_format: str
     retain_chunk_size: int
     retain_extract_causal_links: bool
     retain_extraction_mode: str
@@ -1737,6 +1752,9 @@ class HindsightConfig:
             # Retain settings
             retain_max_completion_tokens=int(
                 os.getenv(ENV_RETAIN_MAX_COMPLETION_TOKENS, str(DEFAULT_RETAIN_MAX_COMPLETION_TOKENS))
+            ),
+            retain_response_format=_validate_retain_response_format(
+                os.getenv(ENV_RETAIN_RESPONSE_FORMAT, DEFAULT_RETAIN_RESPONSE_FORMAT)
             ),
             retain_chunk_size=int(os.getenv(ENV_RETAIN_CHUNK_SIZE, str(DEFAULT_RETAIN_CHUNK_SIZE))),
             retain_extract_causal_links=os.getenv(
