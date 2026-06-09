@@ -1,5 +1,15 @@
 # engram — raw `embedding_only` capture layer
 
+> **Two write paths, one contract (`engram-raw/v1`):**
+> 1. **Live**: `POST /v1/engram/banks/{bank}/raw` (fork endpoint,
+>    `hindsight_api/api/engram_raw.py`) — used by the Claude Code hook
+>    (`~/.claude/hooks/hindsight-retain.py`) into bank `engram-raw`. The server
+>    seals sha256, embeds with the **resident** bge-m3 (~100 ms warm, zero
+>    LLM) and adds deterministic topic tags server-side, so every client
+>    (stormwind, M4 over Tailscale, codex, hermes-agent) shares the taxonomy.
+> 2. **Batch/offline**: `ingest_raw.py` below — direct Postgres, for bulk
+>    imports and for when the API is down.
+
 Ground-truth capture for a self-owned long-term memory system built on the
 Hindsight schema. Stores agent-session messages **verbatim** (raw immutable
 text + sha256) with a locally computed bge-m3 embedding — **zero LLM** in the
