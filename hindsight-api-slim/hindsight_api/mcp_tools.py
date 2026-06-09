@@ -778,7 +778,7 @@ def _register_recall(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig)
         @mcp.tool(description=description)
         async def recall(
             query: str,
-            max_tokens: int = 4096,
+            max_tokens: int = 8000,
             budget: str = "high",
             types: list[str] | None = None,
             tags: list[str] | None = None,
@@ -850,7 +850,7 @@ def _register_recall(mcp: FastMCP, memory: MemoryEngine, config: MCPToolsConfig)
         @mcp.tool(description=description)
         async def recall(
             query: str,
-            max_tokens: int = 4096,
+            max_tokens: int = 8000,
             budget: str = "high",
             types: list[str] | None = None,
             tags: list[str] | None = None,

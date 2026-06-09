@@ -155,7 +155,9 @@ class RecallRequest(BaseModel):
         description="List of fact types to recall: 'world', 'experience', 'observation'. Defaults to world and experience if not specified.",
     )
     budget: Budget = Budget.MID
-    max_tokens: int = 4096
+    # engram fork: raised from 4096 — raw memory units (1-5k chars each) get
+    # entirely dropped by budget trimming at lower values
+    max_tokens: int = 8000
     trace: bool = False
     query_timestamp: str | None = Field(
         default=None,
