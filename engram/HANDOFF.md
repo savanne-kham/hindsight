@@ -168,6 +168,7 @@ duplicates~~ (27 rows — exact `(doc, line, sha)` double-inserts, NOT the
 applied (0 dup groups, `uq_memory_units_engram_doc_line_sha` present,
 engram-raw = 335 rows), raw POST idempotent under the unique arbiter, recall
 + neighborhoods working (`expand` ≈ 8 ms on top of recall), 9 pytest green,
-ruff/ty clean. tmux llama server: `recall-log` window added next to
-`retain-log`. Dotfiles: hook fix committed locally (`a674974`) — GitLab push
-still pending owner decision.
+ruff/ty clean. tmux llama server: `engraph-log` window (renamed from
+retain-log; tails the hook log) + `recall-log` window (tails `[RECALL HTTP]`
+/ `[ENGRAM RECALL]` lines). Dotfiles: hook fix committed locally (`a674974`)
+— GitLab push still pending owner decision.
