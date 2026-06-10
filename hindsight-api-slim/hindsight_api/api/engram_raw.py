@@ -96,6 +96,11 @@ ON CONFLICT (id, bank_id) DO NOTHING
 
 # search_vector is populated explicitly: it is NOT a generated column, and a
 # row without it is invisible to the BM25 leg of recall.
+# Idempotent re-sends: a unit whose (document_id, line_index, sha256) already
+# exists is skipped — the client cursor protocol (commit-on-success) re-sends a
+# whole slice after a timeout/crash, and without this guard every retry would
+# duplicate the rows it had in fact stored. Only applies to items that carry
+# line_index (the agent-transcript contract); free-form items are not deduped.
 INSERT_UNITS = """
 WITH input AS (
     SELECT * FROM unnest(
@@ -113,6 +118,15 @@ SELECT
     to_tsvector('{language}'::regconfig,
                 left(COALESCE(text, '') || ' ' || $8, {max_chars}))
 FROM input
+WHERE NOT (input.metadata ? 'line_index')
+   OR NOT EXISTS (
+        SELECT 1 FROM {memory_units} existing
+        WHERE existing.bank_id = $1
+          AND existing.document_id = $2
+          AND existing.metadata ? 'sha256'
+          AND existing.metadata->>'sha256' = input.metadata->>'sha256'
+          AND existing.metadata->>'line_index' = input.metadata->>'line_index'
+   )
 RETURNING id
 """
 
@@ -237,6 +251,9 @@ def register_engram_raw_routes(app) -> None:
             "document_id": request.document_id,
             "unit_ids": [str(row["id"]) for row in rows],
             "count": len(rows),
+            # re-sent units skipped by the (document_id, line_index, sha256)
+            # guard — clients must treat count + duplicates > 0 as success.
+            "duplicates": len(items) - len(rows),
             "timings_ms": {
                 "embed": round(t_embed * 1000, 1),
                 "insert": round(t_insert * 1000, 1),
