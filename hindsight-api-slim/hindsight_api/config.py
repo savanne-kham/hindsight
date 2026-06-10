@@ -298,6 +298,7 @@ ENV_RERANKER_LOCAL_TRUST_REMOTE_CODE = "HINDSIGHT_API_RERANKER_LOCAL_TRUST_REMOT
 ENV_RERANKER_LOCAL_FP16 = "HINDSIGHT_API_RERANKER_LOCAL_FP16"
 ENV_RERANKER_LOCAL_BUCKET_BATCHING = "HINDSIGHT_API_RERANKER_LOCAL_BUCKET_BATCHING"
 ENV_RERANKER_LOCAL_BATCH_SIZE = "HINDSIGHT_API_RERANKER_LOCAL_BATCH_SIZE"
+ENV_RERANKER_LOCAL_MAX_LENGTH = "HINDSIGHT_API_RERANKER_LOCAL_MAX_LENGTH"
 ENV_RERANKER_TEI_URL = "HINDSIGHT_API_RERANKER_TEI_URL"
 ENV_RERANKER_TEI_BATCH_SIZE = "HINDSIGHT_API_RERANKER_TEI_BATCH_SIZE"
 ENV_RERANKER_TEI_MAX_CONCURRENT = "HINDSIGHT_API_RERANKER_TEI_MAX_CONCURRENT"
@@ -655,6 +656,12 @@ DEFAULT_RERANKER_LOCAL_TRUST_REMOTE_CODE = (
 DEFAULT_RERANKER_LOCAL_FP16 = False  # FP16 inference: opt-in, faster on MPS/CUDA (not CPU)
 DEFAULT_RERANKER_LOCAL_BUCKET_BATCHING = False  # Length-sorted bucket batching: opt-in, 36-54% speedup
 DEFAULT_RERANKER_LOCAL_BATCH_SIZE = 32  # Batch size for local reranker predict() calls
+# Bound the reranker sequence length: attention is O(n^2) and the padded batch is
+# allocated at the LONGEST pair, so one 8k-token document can ask MPS for a giant
+# attention buffer and wedge Metal (MTLCommandBuffer waitUntilCompleted never
+# returns, taking every later MPS op in the process down with it). 1024 tokens
+# keeps reranking quality on long documents while bounding the allocation.
+DEFAULT_RERANKER_LOCAL_MAX_LENGTH = 1024
 DEFAULT_RERANKER_TEI_BATCH_SIZE = 128
 DEFAULT_RERANKER_TEI_MAX_CONCURRENT = 8
 DEFAULT_RERANKER_TEI_HTTP_TIMEOUT = 30.0  # HTTP timeout for TEI reranker requests (seconds)
@@ -1340,6 +1347,7 @@ class HindsightConfig:
     reranker_local_fp16: bool
     reranker_local_bucket_batching: bool
     reranker_local_batch_size: int
+    reranker_local_max_length: int
     reranker_tei_url: str | None
     reranker_tei_batch_size: int
     reranker_tei_max_concurrent: int
@@ -2143,6 +2151,9 @@ class HindsightConfig:
             in ("true", "1"),
             reranker_local_batch_size=int(
                 os.getenv(ENV_RERANKER_LOCAL_BATCH_SIZE, str(DEFAULT_RERANKER_LOCAL_BATCH_SIZE))
+            ),
+            reranker_local_max_length=int(
+                os.getenv(ENV_RERANKER_LOCAL_MAX_LENGTH, str(DEFAULT_RERANKER_LOCAL_MAX_LENGTH))
             ),
             reranker_tei_url=os.getenv(ENV_RERANKER_TEI_URL),
             reranker_tei_batch_size=int(os.getenv(ENV_RERANKER_TEI_BATCH_SIZE, str(DEFAULT_RERANKER_TEI_BATCH_SIZE))),

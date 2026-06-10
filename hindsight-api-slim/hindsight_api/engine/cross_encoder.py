@@ -29,6 +29,7 @@ from ..config import (
     DEFAULT_RERANKER_LOCAL_BATCH_SIZE,
     DEFAULT_RERANKER_LOCAL_FORCE_CPU,
     DEFAULT_RERANKER_LOCAL_MAX_CONCURRENT,
+    DEFAULT_RERANKER_LOCAL_MAX_LENGTH,
     DEFAULT_RERANKER_LOCAL_MODEL,
     DEFAULT_RERANKER_LOCAL_TRUST_REMOTE_CODE,
     DEFAULT_RERANKER_PROVIDER,
@@ -163,6 +164,7 @@ class LocalSTCrossEncoder(CrossEncoderModel):
         fp16: bool = False,
         bucket_batching: bool = False,
         batch_size: int = DEFAULT_RERANKER_LOCAL_BATCH_SIZE,
+        max_length: int = DEFAULT_RERANKER_LOCAL_MAX_LENGTH,
     ):
         """
         Initialize local SentenceTransformers cross-encoder.
@@ -184,6 +186,13 @@ class LocalSTCrossEncoder(CrossEncoderModel):
                             Default: False (opt-in via env var).
             batch_size: Batch size for predict() calls. Optimal values vary by
                        hardware and model (MPS: 32, CUDA: 128+). Default: 32.
+            max_length: Maximum tokenized sequence length per (query, document)
+                       pair. Attention is O(n^2) and the batch is padded to its
+                       longest pair, so leaving the model's native limit (8192
+                       for bge-reranker-v2-m3) lets one long document demand a
+                       huge attention buffer — on MPS this wedges Metal
+                       (waitUntilCompleted never returns) and every later MPS op
+                       in the process hangs behind it. Default: 1024.
         """
         self.model_name = model_name or DEFAULT_RERANKER_LOCAL_MODEL
         self.force_cpu = force_cpu
@@ -191,6 +200,7 @@ class LocalSTCrossEncoder(CrossEncoderModel):
         self.fp16 = fp16
         self.bucket_batching = bucket_batching
         self.batch_size = batch_size
+        self.max_length = max_length
         self._model = None
         LocalSTCrossEncoder._max_concurrent = max_concurrent
 
@@ -273,6 +283,7 @@ class LocalSTCrossEncoder(CrossEncoderModel):
                 self._model = CrossEncoder(
                     self.model_name,
                     device=device,
+                    max_length=self.max_length,
                     model_kwargs={"low_cpu_mem_usage": False},
                     trust_remote_code=self.trust_remote_code,
                 )
@@ -1658,6 +1669,7 @@ def create_cross_encoder_from_env() -> CrossEncoderModel:
             fp16=config.reranker_local_fp16,
             bucket_batching=config.reranker_local_bucket_batching,
             batch_size=config.reranker_local_batch_size,
+            max_length=config.reranker_local_max_length,
         )
     elif provider == "cohere":
         api_key = config.reranker_cohere_api_key
