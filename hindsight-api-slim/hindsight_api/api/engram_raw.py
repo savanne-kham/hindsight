@@ -16,15 +16,19 @@ Contract: engram-raw/v1 (see engram/README.md at the repo root).
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
 from pydantic import BaseModel, Field
 
 from ..config import get_config
 from ..engine.memory_engine import fq_table
+from ..engine.response_models import VALID_RECALL_FACT_TYPES
 from ..models import RequestContext
+
+logger = logging.getLogger(__name__)
 
 ENGRAM_SCHEMA = "engram-raw/v1"
 TSVECTOR_MAX_CHARS = 200_000  # stay far below Postgres' 1MB tsvector limit
@@ -88,6 +92,22 @@ class EngramRawRequest(BaseModel):
     document_tags: list[str] = Field(default_factory=list)
 
 
+class EngramRecallRequest(BaseModel):
+    query: str
+    max_tokens: int = Field(default=4096, description="Token budget for the recall hits themselves")
+    # raw units are messages; a conversational turn spans 2-15 of them, so ±5
+    # captures the median enclosing turn. Overlap-merging keeps dense hit
+    # clusters cheap. Clamped to 0..50 (0 = no expansion).
+    radius: int = 5
+    types: list[str] | None = None
+    tags: list[str] | None = None
+    # context units are head-truncated; recall hits always stay verbatim.
+    neighbor_max_chars: int = 600
+    # global cap over all neighborhood unit texts, filled best-hit-first;
+    # windows beyond it return coordinates only (units_omitted=true).
+    max_neighborhood_chars: int = 24_000
+
+
 INSERT_DOCUMENT = """
 INSERT INTO {documents} (id, bank_id, original_text, content_hash, retain_params, tags)
 VALUES ($1, $2, '', $3, $4::jsonb, $5)
@@ -143,6 +163,71 @@ WHERE bank_id = $1 AND document_id = $2
 ORDER BY (metadata->>'line_index')::int
 LIMIT $5
 """
+
+
+def merge_hit_windows(hits: list[tuple[str, int]], radius: int) -> list[dict]:
+    """(document_id, line_index) pairs -> merged per-document line windows.
+
+    Each hit expands to [line-radius, line+radius]; windows of the same
+    document that overlap or are contiguous (no transcript line missing
+    between them) are merged so that close hits — adjacent messages of one
+    conversation — yield ONE neighborhood instead of duplicated unit lists.
+    Windows keep first-hit-rank order: callers fill a char budget
+    best-hit-first. Pure function (unit tested)."""
+    windows: list[dict] = []
+    for document_id, line in hits:
+        lo, hi = max(0, line - radius), line + radius
+        target = None
+        keep = []
+        for w in windows:
+            if w["document_id"] == document_id and w["from_line"] <= hi + 1 and lo <= w["to_line"] + 1:
+                if target is None:
+                    target = w
+                    w["from_line"] = min(w["from_line"], lo)
+                    w["to_line"] = max(w["to_line"], hi)
+                    w["hit_lines"].append(line)
+                    keep.append(w)
+                else:
+                    # this hit bridges two existing windows: fold w into target
+                    target["from_line"] = min(target["from_line"], w["from_line"])
+                    target["to_line"] = max(target["to_line"], w["to_line"])
+                    target["hit_lines"].extend(w["hit_lines"])
+            else:
+                keep.append(w)
+        if target is None:
+            keep.append({"document_id": document_id, "from_line": lo, "to_line": hi, "hit_lines": [line]})
+        windows = keep
+    for w in windows:
+        w["hit_lines"] = sorted(set(w["hit_lines"]))
+    return windows
+
+
+def _row_to_unit(row, *, hit_lines: set[int] | None = None, neighbor_max_chars: int = 0) -> dict:
+    """Shared unit shape of the sequence/neighborhood payloads. Neighbor units
+    (not a recall hit themselves) are head-truncated to neighbor_max_chars —
+    they are context, the full verbatim text stays one GET (or the JSONL
+    archive) away; hit units always keep their full text."""
+    raw_md = row["metadata"]
+    md = json.loads(raw_md) if isinstance(raw_md, str) else (raw_md or {})
+    line_index = int(md.get("line_index", -1))
+    text = row["text"]
+    truncated = False
+    if neighbor_max_chars and len(text) > neighbor_max_chars and (hit_lines is None or line_index not in hit_lines):
+        text = text[:neighbor_max_chars] + "…"
+        truncated = True
+    unit = {
+        "id": str(row["id"]),
+        "line_index": line_index,
+        "role": md.get("role"),
+        "tool": md.get("tool"),
+        "turn": md.get("turn"),
+        "tags": list(row["tags"] or []),
+        "timestamp": row["event_date"].isoformat() if row["event_date"] else None,
+        "text": text,
+    }
+    if truncated:
+        unit["truncated"] = True
+    return unit
 
 
 def register_engram_raw_routes(app) -> None:
@@ -291,25 +376,126 @@ def register_engram_raw_routes(app) -> None:
         sql = SELECT_DOCUMENT_UNITS.format(memory_units=fq_table("memory_units"))
         async with memory._pool.acquire() as conn:
             rows = await conn.fetch(sql, bank_id, document_id, lo, hi, limit)
-        units = []
-        for row in rows:
-            raw_md = row["metadata"]
-            md = json.loads(raw_md) if isinstance(raw_md, str) else (raw_md or {})
-            units.append(
-                {
-                    "id": str(row["id"]),
-                    "line_index": int(md.get("line_index", -1)),
-                    "role": md.get("role"),
-                    "tool": md.get("tool"),
-                    "turn": md.get("turn"),
-                    "tags": list(row["tags"] or []),
-                    "timestamp": row["event_date"].isoformat() if row["event_date"] else None,
-                    "text": row["text"],
-                }
-            )
+        units = [_row_to_unit(row) for row in rows]
         return {
             "bank_id": bank_id,
             "document_id": document_id,
             "count": len(units),
             "units": units,
+        }
+
+    @app.post(
+        "/v1/engram/banks/{bank_id}/recall",
+        summary="engram recall with conversational-neighborhood expansion",
+        description=(
+            "Hybrid recall (semantic + BM25 + graph + temporal, reranked — "
+            "zero LLM) over raw agent-session units, then small-to-big "
+            "expansion: every hit that carries a transcript line_index is "
+            "expanded to its conversational neighborhood "
+            "[line-radius, line+radius]; overlapping windows of one document "
+            "are merged. Neighbor units are head-truncated to "
+            "neighbor_max_chars (hits stay verbatim); windows are filled "
+            "best-hit-first until max_neighborhood_chars, the rest come back "
+            "with units_omitted=true and can be fetched via the documents/"
+            "{document_id}/units endpoint."
+        ),
+        tags=["engram"],
+    )
+    async def engram_recall(
+        bank_id: str,
+        request: EngramRecallRequest,
+        authorization: str | None = Header(default=None),
+    ):
+        memory = app.state.memory
+        radius = max(0, min(request.radius, 50))
+        # mirror http.py's recall route: API key from the Authorization header
+        # (no-op on the single-tenant deployment, correct if auth is enabled),
+        # observation facts excluded unless asked for.
+        api_key = None
+        if authorization:
+            api_key = (
+                authorization[7:].strip() if authorization.lower().startswith("bearer ") else authorization.strip()
+            )
+        t0 = time.perf_counter()
+        result = await memory.recall_async(
+            bank_id,
+            request.query,
+            max_tokens=request.max_tokens,
+            fact_type=request.types or list(VALID_RECALL_FACT_TYPES),
+            tags=request.tags,
+            request_context=RequestContext(api_key=api_key),
+        )
+        t_recall = time.perf_counter() - t0
+
+        results, hits = [], []
+        for fact in result.results:
+            md = fact.metadata or {}
+            results.append(
+                {
+                    "id": fact.id,
+                    "text": fact.text,
+                    "type": fact.fact_type,
+                    "document_id": fact.document_id,
+                    "metadata": md,
+                    "tags": fact.tags,
+                    "mentioned_at": fact.mentioned_at,
+                }
+            )
+            line = md.get("line_index")
+            if fact.document_id and line is not None and str(line).isdigit():
+                hits.append((fact.document_id, int(line)))
+
+        t1 = time.perf_counter()
+        neighborhoods = []
+        if hits and radius > 0:
+            sql = SELECT_DOCUMENT_UNITS.format(memory_units=fq_table("memory_units"))
+            budget = request.max_neighborhood_chars
+            async with memory._pool.acquire() as conn:
+                for window in merge_hit_windows(hits, radius):
+                    rows = await conn.fetch(
+                        sql,
+                        bank_id,
+                        window["document_id"],
+                        window["from_line"],
+                        window["to_line"],
+                        window["to_line"] - window["from_line"] + 1,
+                    )
+                    units = [
+                        _row_to_unit(
+                            row,
+                            hit_lines=set(window["hit_lines"]),
+                            neighbor_max_chars=request.neighbor_max_chars,
+                        )
+                        for row in rows
+                    ]
+                    size = sum(len(u["text"]) for u in units)
+                    if size <= budget:
+                        budget -= size
+                        neighborhoods.append({**window, "units": units})
+                    else:
+                        # budget exhausted: ship the window coordinates only —
+                        # the client can still fetch it explicitly.
+                        neighborhoods.append({**window, "units": [], "units_omitted": True})
+        t_expand = time.perf_counter() - t1
+
+        # one line per request, same spirit as http.py's [RECALL HTTP] —
+        # this is what the recall-log tmux window tails.
+        logger.info(
+            "[ENGRAM RECALL] bank=%s results=%d neighborhoods=%d radius=%d recall=%.1fms expand=%.1fms",
+            bank_id,
+            len(results),
+            len(neighborhoods),
+            radius,
+            t_recall * 1000,
+            t_expand * 1000,
+        )
+        return {
+            "bank_id": bank_id,
+            "query": request.query,
+            "results": results,
+            "neighborhoods": neighborhoods,
+            "timings_ms": {
+                "recall": round(t_recall * 1000, 1),
+                "expand": round(t_expand * 1000, 1),
+            },
         }
