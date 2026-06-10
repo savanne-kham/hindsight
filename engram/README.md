@@ -33,7 +33,7 @@ One `memory_units` row per user/assistant message:
 | `context` | `claude_code` |
 | `document_id` | `claude-code:<host>:<session_id>` |
 | `tags` | deterministic: `raw, agent-session, claude-code, <host>, project:<cwd>, role:<role>` + substring-matched topic tags (`tags.py`) |
-| `metadata` | `{schema, sha256, source, host, session_id, source_path, message_index, line_index, role, ingested_at, embedding_truncated}` — **string values only**: recall validates metadata as `Dict[str, str]` (`MemoryFact`); a single int/bool value makes the whole bank unsearchable |
+| `metadata` | `{schema, sha256, source, host, session_id, source_path, message_index, line_index, turn, role, tool, line_span, batch_size, ingested_at, embedding_truncated}` — **string values only**: recall validates metadata as `Dict[str, str]` (`MemoryFact`); a single int/bool value makes the whole bank unsearchable. `turn` = line_index of the initiating user message (grouping key to reassemble one conversational turn); `line_span`/`batch_size` only on merged runs of sparse tool actions (tag `tool-batch`) |
 | `event_date` / `mentioned_at` | message timestamp (feeds the temporal recall leg) |
 | `search_vector` | `to_tsvector('english', text … )` — **must be set explicitly**: it is *not* a generated column; the API fills it at insert time, so a direct INSERT that omits it is invisible to the BM25 leg of recall |
 
@@ -63,6 +63,23 @@ $VENV/bin/python ingest_raw.py verify --bank engram-test
 
 Re-ingesting the same session is an idempotent no-op (document PK conflict);
 `--force` atomically replaces the document and its units (FK cascade).
+
+## Sequence + idempotence (API)
+
+Raw units are ordered by `(document_id, (metadata->>'line_index')::int)` — a
+sort key, not a linked list: the JSONL transcript is the authoritative chain,
+the DB only projects it (expression index `idx_memory_units_engram_doc_line`).
+Reconstruct a recall hit's neighborhood (small-to-big retrieval):
+
+```bash
+curl -s "localhost:8888/v1/engram/banks/engram-raw/documents/<doc>/units?around=216&radius=10" | jq
+# or an explicit range: ?from_line=100&to_line=200   (limit ≤ 1000)
+```
+
+The raw retain endpoint skips re-sent units — same `(document_id,
+line_index, sha256)` — and reports them as `duplicates` in the response, so
+a slice retried after a timeout/crash never double-inserts. Clients must
+treat `count + duplicates > 0` as success.
 
 ## Validate
 
