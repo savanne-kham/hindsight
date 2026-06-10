@@ -76,10 +76,38 @@ curl -s "localhost:8888/v1/engram/banks/engram-raw/documents/<doc>/units?around=
 # or an explicit range: ?from_line=100&to_line=200   (limit ≤ 1000)
 ```
 
-The raw retain endpoint skips re-sent units — same `(document_id,
-line_index, sha256)` — and reports them as `duplicates` in the response, so
-a slice retried after a timeout/crash never double-inserts. Clients must
-treat `count + duplicates > 0` as success.
+Idempotence is enforced BY THE DATABASE: a partial unique index on
+`(bank_id, document_id, line_index, sha256)` (migration `f3b8d1a6c2e9`,
+`uq_memory_units_engram_doc_line_sha`) is the `ON CONFLICT DO NOTHING`
+arbiter of the raw retain INSERT. Re-sent units are skipped and reported as
+`duplicates` in the response, so a slice retried after a timeout/crash never
+double-inserts — race-proof even when a live flush and a reconcile sweep send
+the same slice concurrently (the previous `WHERE NOT EXISTS` guard was not,
+and let 27 double-inserts through before being replaced). Clients must treat
+`count + duplicates > 0` as success.
+
+## Recall with neighborhood expansion
+
+`POST /v1/engram/banks/{bank}/recall` — hybrid recall (semantic + BM25 +
+graph + temporal, reranked, zero LLM) followed by small-to-big expansion:
+every hit carrying a `line_index` is expanded to its conversational window
+`[line-radius, line+radius]`; overlapping/contiguous windows of one document
+are merged (one neighborhood per cluster of close hits, no duplicated units).
+
+```bash
+curl -s -X POST localhost:8888/v1/engram/banks/engram-raw/recall \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "MPS reranker wedge", "radius": 5}' | jq '.neighborhoods[0]'
+```
+
+Body: `query`, `max_tokens` (hit budget, default 4096), `radius` (default 5,
+clamped 0–50, 0 = no expansion), `types`, `tags`, `neighbor_max_chars`
+(default 600 — neighbor units are head-truncated and flagged
+`"truncated": true`; HIT units always stay verbatim), `max_neighborhood_chars`
+(default 24000 — global cap filled best-hit-first; windows beyond it return
+coordinates only with `units_omitted: true`, fetchable via the units
+endpoint above). Each request logs one `[ENGRAM RECALL]` line (tailed by the
+`recall-log` tmux window on the llama server).
 
 Both guarantees are covered by `tests/test_engram_raw.py`:
 

@@ -64,9 +64,27 @@ One exception, non-negotiable:
   Partial expression indexes via migration `e7a1c9d2b4f6`.
   Read API: `GET /v1/engram/banks/{bank}/documents/{doc}/units?around=N&radius=k`
   (small-to-big retrieval).
-- **Idempotent re-sends**: server skips `(document_id, line_index, sha256)`
-  duplicates, reports them as `duplicates`. CLIENT CONTRACT:
-  `count + duplicates > 0` = success (count-only loops forever).
+- **Idempotent re-sends**: DB-enforced — partial unique index
+  `uq_memory_units_engram_doc_line_sha` on `(bank_id, document_id,
+  line_index, sha256)` (migration `f3b8d1a6c2e9`) as `ON CONFLICT DO NOTHING`
+  arbiter; race-proof under concurrent flush+sweep (the old `WHERE NOT
+  EXISTS` probe raced under READ COMMITTED and let 27 double-inserts
+  through — purged by the same migration). Skipped units reported as
+  `duplicates`. CLIENT CONTRACT: `count + duplicates > 0` = success
+  (count-only loops forever).
+- **Recall + neighborhood expansion**: `POST /v1/engram/banks/{bank}/recall`
+  = hybrid recall then small-to-big expansion of every line_index hit into
+  its merged conversational window (`radius` default 5; neighbor units
+  head-truncated to `neighbor_max_chars`, hits verbatim; global
+  `max_neighborhood_chars` budget filled best-hit-first, overflow windows
+  return `units_omitted: true`). Logs `[ENGRAM RECALL]` lines → `recall-log`
+  tmux window (llama server). MCP exposure NOT done (see backlog).
+- **Hook events**: Stop does NOT fire on user interrupts; the hook also
+  registers UserPromptSubmit (interrupted turns flush with the user's next
+  message) and baselines the cursor at SessionStart, not at first flush — a
+  session whose first Stop came hours in used to lose its whole prefix
+  (observed: 5d9b6f9a lost lines 0-133 on 2026-06-10; recovered by cursor
+  reset + re-flush, server-side dedupe absorbed the overlap).
 - **Unit shape**: `turn` metadata = line_index of initiating user message
   (grouping key); runs of sparse tool actions (no result, no error, <300 chars)
   merged into one `tool-batch` unit; long tool results truncated head+tail
@@ -120,20 +138,32 @@ companion of this capture layer, same cross-agent memory ambition.
 1. **Normalization layer** — the big one: offline, deterministic per-`turn`
    projection of raw units (narration + actions grouped), separate bank or
    `derived` tag; later LLM distillation on top. Regenerable, never mutates raw.
-2. **Wire `?around` into recall** — a recall hit on a raw unit should expand to
-   its conversational neighborhood (MCP/hermes side).
-3. **Purge historical duplicates** — pre-fix 210/216-style rows still in DB
-   (same text, different line_index, no other text between); one-shot SQL or
-   let normalization handle them.
-4. **MaxP windowing** for long-unit reranking — ONLY if quality on raw units
+   Owner gate: only start AFTER the raw retain has soaked ~24 h problem-free
+   (gate set 2026-06-10 late afternoon).
+2. **MCP exposure of engram recall** — upstream already provides the hook:
+   `HINDSIGHT_API_MCP_EXTENSION=module:Class` loaded in `api/mcp.py` →
+   a fork-owned `MCPExtension` subclass registering an `engram_recall` tool
+   costs ZERO upstream delta (env var lives in hindsight-config). Deferred:
+   no agent consumes the hindsight MCP on stormwind today.
+3. **MaxP windowing** for long-unit reranking — ONLY if quality on raw units
    proves critical AND normalization doesn't make it moot (see vault note).
-5. **M4 sync** — on BA4714: `git pull && ./install.sh` in dotfiles + symlink &
+4. **M4 sync** — on BA4714: `git pull && ./install.sh` in dotfiles + symlink &
    `launchctl bootstrap` the `engram-raw-sweep` plist (README has the commands).
 
-## State as of 2026-06-10
+Done 2026-06-10 (this session): ~~wire `?around` into recall~~ (HTTP endpoint
+`POST …/recall`, neighborhoods + merging + budgets); ~~purge historical
+duplicates~~ (27 rows — exact `(doc, line, sha)` double-inserts, NOT the
+"different line_index" shape this doc previously guessed — purged by migration
+`f3b8d1a6c2e9` which also adds the unique-index backstop); retain-gap hook fix
+(SessionStart baseline + UserPromptSubmit).
 
-`engram` branch = upstream/main (20 commits integrated, clean rebase) + 9 fork
-commits, pushed to `origin/engram`. Runtime live on this exact code, verified:
-raw POST ~0.3-0.5 s, worst-case recall 16 s (was: wedged the server), dedupe
-idempotent E2E, 3 pytest green. Dotfiles side committed (hook v2), on GitLab
-`ahead` — push pending owner decision.
+## State as of 2026-06-10 (evening)
+
+`engram` branch = upstream/main + 11 fork commits, pushed to `origin/engram`
+(head `b04e6e7a4`). Runtime live on this exact code, verified E2E: migration
+applied (0 dup groups, `uq_memory_units_engram_doc_line_sha` present,
+engram-raw = 335 rows), raw POST idempotent under the unique arbiter, recall
++ neighborhoods working (`expand` ≈ 8 ms on top of recall), 9 pytest green,
+ruff/ty clean. tmux llama server: `recall-log` window added next to
+`retain-log`. Dotfiles: hook fix committed locally (`a674974`) — GitLab push
+still pending owner decision.
