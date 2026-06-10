@@ -28,6 +28,13 @@ from ..models import RequestContext
 
 ENGRAM_SCHEMA = "engram-raw/v1"
 TSVECTOR_MAX_CHARS = 200_000  # stay far below Postgres' 1MB tsvector limit
+# Attention is O(n^2) in sequence length and sentence-transformers pads the
+# whole batch to the longest text: a batch of near-8192-token items asks MPS
+# for ~40GiB attention buffers and crashes the request. Cap the EMBEDDING
+# input only (stored text stays full/verbatim, sha256 unchanged) and encode
+# in small sub-batches.
+EMBED_CHAR_CAP = 6_000
+EMBED_SUB_BATCH = 8
 
 # Deterministic topic tagging (V1 taxonomy), applied server-side so every
 # client (stormwind hook, M4 over Tailscale, codex, hermes-agent) gets the
@@ -52,11 +59,7 @@ TOPIC_KEYWORDS = {
 
 def detect_topic_tags(text: str) -> list[str]:
     haystack = text.lower()
-    return [
-        tag
-        for tag, keywords in TOPIC_KEYWORDS.items()
-        if any(keyword in haystack for keyword in keywords)
-    ]
+    return [tag for tag, keywords in TOPIC_KEYWORDS.items() if any(keyword in haystack for keyword in keywords)]
 
 
 def dedupe_preserve_order(tags: list[str]) -> list[str]:
@@ -145,9 +148,20 @@ def register_engram_raw_routes(app) -> None:
             )
 
         texts = [item.text for item in items]
+        embed_texts = [t[:EMBED_CHAR_CAP] for t in texts]
+        truncated = [len(t) > EMBED_CHAR_CAP for t in texts]
         t0 = time.perf_counter()
-        # resident model, off the event loop (MPS encode can take 100s of ms)
-        vectors = await asyncio.to_thread(memory.embeddings.encode_documents, texts)
+        # resident model, off the event loop (MPS encode can take 100s of ms).
+        # Length-sort before sub-batching so short texts batch together
+        # (padding waste is per-batch: one long text pads its whole batch).
+        order = sorted(range(len(embed_texts)), key=lambda i: len(embed_texts[i]))
+        sorted_vectors: list = []
+        for off in range(0, len(order), EMBED_SUB_BATCH):
+            chunk = [embed_texts[i] for i in order[off : off + EMBED_SUB_BATCH]]
+            sorted_vectors.extend(await asyncio.to_thread(memory.embeddings.encode_documents, chunk))
+        vectors: list = [None] * len(embed_texts)
+        for rank, i in enumerate(order):
+            vectors[i] = sorted_vectors[rank]
         t_embed = time.perf_counter() - t0
 
         ingested_at = datetime.now(timezone.utc).isoformat()
@@ -155,15 +169,20 @@ def register_engram_raw_routes(app) -> None:
         timestamps: list[datetime | None] = []
         tags_jsons: list[str] = []
         metadata_jsons: list[str] = []
-        for item, vector in zip(items, vectors):
+        for item, vector, trunc in zip(items, vectors, truncated):
             embeddings_str.append(str([float(x) for x in vector]))
             timestamps.append(item.timestamp)
-            tags_jsons.append(json.dumps(dedupe_preserve_order([*item.tags, *detect_topic_tags(item.text)])))
+            unit_tags = [*item.tags, *detect_topic_tags(item.text)]
+            if trunc:
+                unit_tags.append("truncated-embedding")
+            tags_jsons.append(json.dumps(dedupe_preserve_order(unit_tags)))
             metadata = dict(item.metadata)
             # sha256 sealed server-side over the exact stored text
             metadata["sha256"] = hashlib.sha256(item.text.encode("utf-8")).hexdigest()
             metadata.setdefault("schema", ENGRAM_SCHEMA)
             metadata["ingested_at"] = ingested_at
+            if trunc:
+                metadata["embedding_truncated"] = "true"
             metadata_jsons.append(json.dumps(metadata))
 
         insert_doc = INSERT_DOCUMENT.format(documents=fq_table("documents"))
