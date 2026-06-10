@@ -99,8 +99,14 @@ ON CONFLICT (id, bank_id) DO NOTHING
 # Idempotent re-sends: a unit whose (document_id, line_index, sha256) already
 # exists is skipped — the client cursor protocol (commit-on-success) re-sends a
 # whole slice after a timeout/crash, and without this guard every retry would
-# duplicate the rows it had in fact stored. Only applies to items that carry
-# line_index (the agent-transcript contract); free-form items are not deduped.
+# duplicate the rows it had in fact stored. The guard is the partial UNIQUE
+# index uq_memory_units_engram_doc_line_sha (migration f3b8d1a6c2e9) used as
+# ON CONFLICT arbiter: unlike the previous WHERE NOT EXISTS probe it is
+# race-proof under concurrent re-sends (live flush + sweep overlapping) and
+# also dedupes identical rows within one batch. Only items that carry
+# line_index (the agent-transcript contract) match the index predicate;
+# free-form items are not deduped. RETURNING reports inserted rows only, so
+# the `duplicates` accounting in the response stays exact.
 INSERT_UNITS = """
 WITH input AS (
     SELECT * FROM unnest(
@@ -118,15 +124,9 @@ SELECT
     to_tsvector('{language}'::regconfig,
                 left(COALESCE(text, '') || ' ' || $8, {max_chars}))
 FROM input
-WHERE NOT (input.metadata ? 'line_index')
-   OR NOT EXISTS (
-        SELECT 1 FROM {memory_units} existing
-        WHERE existing.bank_id = $1
-          AND existing.document_id = $2
-          AND existing.metadata ? 'sha256'
-          AND existing.metadata->>'sha256' = input.metadata->>'sha256'
-          AND existing.metadata->>'line_index' = input.metadata->>'line_index'
-   )
+ON CONFLICT (bank_id, document_id, (metadata->>'line_index'), (metadata->>'sha256'))
+    WHERE metadata ? 'line_index' AND metadata ? 'sha256'
+    DO NOTHING
 RETURNING id
 """
 
