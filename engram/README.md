@@ -81,6 +81,16 @@ line_index, sha256)` — and reports them as `duplicates` in the response, so
 a slice retried after a timeout/crash never double-inserts. Clients must
 treat `count + duplicates > 0` as success.
 
+Both guarantees are covered by `tests/test_engram_raw.py`:
+
+```bash
+psql -d postgres -c "CREATE DATABASE hindsight_test OWNER hindsight" 2>/dev/null
+psql -d hindsight_test -c "CREATE EXTENSION IF NOT EXISTS vector"   # needs superuser
+cd hindsight-api-slim && HINDSIGHT_API_DATABASE_URL=postgresql://hindsight:hindsight@127.0.0.1:5432/hindsight_test \
+  uv run --extra local-ml pytest tests/test_engram_raw.py -n 0
+# -n 0: xdist workers race the migration runner on a shared external DB
+```
+
 ## Validate
 
 ```bash
