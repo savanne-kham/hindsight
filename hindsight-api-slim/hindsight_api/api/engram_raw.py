@@ -116,6 +116,20 @@ FROM input
 RETURNING id
 """
 
+# Sequence reconstruction: raw units of one session document, ordered by their
+# transcript line. The ::int cast is REQUIRED (metadata values are strings, and
+# "10" < "9" lexicographically) and is what the partial expression index
+# idx_memory_units_engram_doc_line is built on.
+SELECT_DOCUMENT_UNITS = """
+SELECT id, text, tags, metadata, event_date
+FROM {memory_units}
+WHERE bank_id = $1 AND document_id = $2
+  AND metadata ? 'line_index'
+  AND (metadata->>'line_index')::int BETWEEN $3 AND $4
+ORDER BY (metadata->>'line_index')::int
+LIMIT $5
+"""
+
 
 def register_engram_raw_routes(app) -> None:
     @app.post(
@@ -227,4 +241,58 @@ def register_engram_raw_routes(app) -> None:
                 "embed": round(t_embed * 1000, 1),
                 "insert": round(t_insert * 1000, 1),
             },
+        }
+
+    @app.get(
+        "/v1/engram/banks/{bank_id}/documents/{document_id}/units",
+        summary="engram raw units of a document, in transcript order",
+        description=(
+            "Sequence reconstruction for raw agent-session units: returns the "
+            "units of one session document ordered by their transcript "
+            "line_index. Use around+radius to expand a recall hit to its "
+            "conversational neighborhood (small-to-big retrieval), or "
+            "from_line/to_line for an explicit range."
+        ),
+        tags=["engram"],
+    )
+    async def engram_document_units(
+        bank_id: str,
+        document_id: str,
+        around: int | None = None,
+        radius: int = 10,
+        from_line: int | None = None,
+        to_line: int | None = None,
+        limit: int = 200,
+    ):
+        memory = app.state.memory
+        limit = max(1, min(limit, 1000))
+        if around is not None:
+            lo, hi = max(0, around - radius), around + radius
+        else:
+            lo = from_line if from_line is not None else 0
+            hi = to_line if to_line is not None else 2**31 - 1
+        sql = SELECT_DOCUMENT_UNITS.format(memory_units=fq_table("memory_units"))
+        async with memory._pool.acquire() as conn:
+            rows = await conn.fetch(sql, bank_id, document_id, lo, hi, limit)
+        units = []
+        for row in rows:
+            raw_md = row["metadata"]
+            md = json.loads(raw_md) if isinstance(raw_md, str) else (raw_md or {})
+            units.append(
+                {
+                    "id": str(row["id"]),
+                    "line_index": int(md.get("line_index", -1)),
+                    "role": md.get("role"),
+                    "tool": md.get("tool"),
+                    "turn": md.get("turn"),
+                    "tags": list(row["tags"] or []),
+                    "timestamp": row["event_date"].isoformat() if row["event_date"] else None,
+                    "text": row["text"],
+                }
+            )
+        return {
+            "bank_id": bank_id,
+            "document_id": document_id,
+            "count": len(units),
+            "units": units,
         }
