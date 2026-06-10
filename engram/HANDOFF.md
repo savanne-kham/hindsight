@@ -17,10 +17,22 @@ codex, hermes-agent) built on a **fork** of Hindsight. Two layers:
    per-turn groupings, distilled units. Always REGENERABLE offline from raw.
    Never enrich the raw log; project it (event sourcing / CQRS).
 
-## Hard rules (owner decisions — do not relitigate)
+## Owner philosophy (read this first)
 
+**Nothing here is locked.** The owner wants this system continuously questioned
+and improved — aim for SOTA and big ROI, learn from how top teams and top
+developers solve the same problems. **No assumptions: reason from empirical
+facts** (measure, reproduce, read the actual spec/source — every major decision
+below was settled by querying the live DB, sampling live stacks, or running a
+falsifiable test, not by plausibility). If you think a design choice below is
+wrong, challenge it — *with evidence*.
+
+One exception, non-negotiable:
 - **NO upstream PRs to vectorize-io/hindsight.** Ever. All fixes stay fork-only
   on the `engram` branch (owner dislikes the maintainers).
+
+## Current design decisions (challenge with evidence, not vibes)
+
 - Fork stays rebase-friendly: new files only + minimal upstream deltas
   (`git rebase upstream/main` is the update path; the engram feature is
   `hindsight_api/api/engram_raw.py` + a 3-line hook in `http.py` + migrations).
@@ -33,7 +45,7 @@ codex, hermes-agent) built on a **fork** of Hindsight. Two layers:
 
 | Piece | Where |
 |---|---|
-| Fork worktree (runtime serves THIS) | `~/dev/ai-lab/hindsight/engram` (branch `engram`, remote `origin`=github.com/savanne-kham/hindsight, `upstream`=vectorize-io/hindsight) |
+| Fork worktree (runtime serves THIS) | `~/dev/ai-lab/hindsight/engram` (branch `engram`) — online: <https://github.com/savanne-kham/hindsight/tree/engram> (`origin`; `upstream`=vectorize-io/hindsight) |
 | API runtime | launchd `com.guinsoo.hindsight` on **stormwind**, port 8888 (`0.0.0.0` — M4 reaches it via Tailscale `http://stormwind:8888`); venv `~/dev/ai-lab/hindsight-config/macstudio-m1max/venv-hindsight` (editable install → the worktree); start script in `~/dev/ai-lab/hindsight-config/` |
 | Write hook (Claude Code) | `~/.claude/hooks/hindsight-retain.py` → symlink into `~/.dotfiles/common/claude/.claude/hooks/` (dotfiles repo, GitLab). Events Stop/SessionEnd/SessionStart, merged into settings.json by `install.sh` |
 | Reconcile sweep | launchd `com.guinsoo.engram-raw-sweep` every 3 h + SessionStart (plists versioned per profile in dotfiles `<profile>/launchd/`) |
@@ -85,7 +97,12 @@ Debugging gold: `sample <pid> 3` (native macOS, no root) gives live stacks —
 it's how the MPS wedge was found. Logs: `~/logs/hindsight/hindsight.log`,
 hook log `~/.claude/hindsight-retain.log` (`✓`=committed, `✗`=will retry, `+N dup`).
 
-## Deep documentation (Obsidian vault, `03 - AI/memory/hindsight/`)
+## Deep documentation & related repos
+
+Obsidian vault `~/obsidian-vault/03 - AI/memory/` — the owner's whole body of
+**agentic-memory notes**: model benchmarks (retain/reflect/consolidate), provider
+comparisons, architecture and Postgres data model, consolidation strategy…
+Browse it before redesigning anything. Key notes in `memory/hindsight/`:
 
 - `engram-raw-sequence-and-idempotence.md` — design decisions + rationale
 - `mps-attention-wedge-reranker.md` — the MPS wedge story + **MaxP windowing
@@ -93,6 +110,10 @@ hook log `~/.claude/hindsight-retain.log` (`✓`=committed, `✗`=will retry, `+
 - `claude-code-retain-hook.md`, `hindsight-architecture.md`,
   `hindsight-postgres-data-model.md` — older foundations
 - Session log: vault `90 - AI Sessions/hindsight.md` (read last entry first)
+
+Related repo: <https://gitlab.com/savanne-kham/ai-agent-sessions> — **draft**
+exporter of agentic sessions (Claude Code, codex, opencode); upstream feeder /
+companion of this capture layer, same cross-agent memory ambition.
 
 ## Backlog (next steps, in rough priority order)
 
