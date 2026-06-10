@@ -1,12 +1,5 @@
 # engram — raw `embedding_only` capture layer
 
-> **Terminology — the write action is called *engraphy* (verb: to engraph),**
-> Richard Semon's own 1904 term for inscribing an experience into the memory
-> substrate (he also coined *engram* and *ecphory* — the read-side cueing,
-> reserved for the recall expansion). Deliberately NOT "retain": Hindsight's
-> retain is the LLM fact-extraction pipeline; engraphy is its zero-LLM,
-> verbatim counterpart.
-
 > **Two write paths, one contract (`engram-raw/v1`):**
 > 1. **Live**: `POST /v1/engram/banks/{bank}/raw` (fork endpoint,
 >    `hindsight_api/api/engram_raw.py`) — used by the Claude Code hook
@@ -86,7 +79,7 @@ curl -s "localhost:8888/v1/engram/banks/engram-raw/documents/<doc>/units?around=
 Idempotence is enforced BY THE DATABASE: a partial unique index on
 `(bank_id, document_id, line_index, sha256)` (migration `f3b8d1a6c2e9`,
 `uq_memory_units_engram_doc_line_sha`) is the `ON CONFLICT DO NOTHING`
-arbiter of the engraphy INSERT. Re-sent units are skipped and reported as
+arbiter of the raw retain INSERT. Re-sent units are skipped and reported as
 `duplicates` in the response, so a slice retried after a timeout/crash never
 double-inserts — race-proof even when a live flush and a reconcile sweep send
 the same slice concurrently (the previous `WHERE NOT EXISTS` guard was not,

@@ -36,10 +36,6 @@ One exception, non-negotiable:
 - Fork stays rebase-friendly: new files only + minimal upstream deltas
   (`git rebase upstream/main` is the update path; the engram feature is
   `hindsight_api/api/engram_raw.py` + a 3-line hook in `http.py` + migrations).
-- Terminology: the raw write action is **engraphy** (verb *engraph* — Semon
-  1904, who coined "engram"; *ecphory* is reserved for the recall side).
-  NEVER call it "retain": retain = Hindsight's upstream LLM extraction
-  pipeline, a different thing.
 - Raw layer stays atomic: 1 message ↔ 1 unit for human/assistant text. Grouping
   happens at READ time (`turn` key, `?around` endpoint) or in derived layers.
 - Conversation language follows the owner (French); code/comments/docs English.
@@ -142,8 +138,8 @@ companion of this capture layer, same cross-agent memory ambition.
 1. **Normalization layer** — the big one: offline, deterministic per-`turn`
    projection of raw units (narration + actions grouped), separate bank or
    `derived` tag; later LLM distillation on top. Regenerable, never mutates raw.
-   Owner gate: only start AFTER the engraphy write path has soaked ~24 h
-   problem-free (gate set 2026-06-10 late afternoon).
+   Owner gate: only start AFTER the raw retain has soaked ~24 h problem-free
+   (gate set 2026-06-10 late afternoon).
 2. **MCP exposure of engram recall** — upstream already provides the hook:
    `HINDSIGHT_API_MCP_EXTENSION=module:Class` loaded in `api/mcp.py` →
    a fork-owned `MCPExtension` subclass registering an `engram_recall` tool
@@ -168,7 +164,6 @@ duplicates~~ (27 rows — exact `(doc, line, sha)` double-inserts, NOT the
 applied (0 dup groups, `uq_memory_units_engram_doc_line_sha` present,
 engram-raw = 335 rows), raw POST idempotent under the unique arbiter, recall
 + neighborhoods working (`expand` ≈ 8 ms on top of recall), 9 pytest green,
-ruff/ty clean. tmux llama server: `engraph-log` window (renamed from
-retain-log; tails the hook log) + `recall-log` window (tails `[RECALL HTTP]`
-/ `[ENGRAM RECALL]` lines). Dotfiles: hook fix committed locally (`a674974`)
-— GitLab push still pending owner decision.
+ruff/ty clean. tmux llama server: `recall-log` window added next to
+`retain-log`. Dotfiles: hook fix committed locally (`a674974`) — GitLab push
+still pending owner decision.

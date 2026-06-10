@@ -2811,7 +2811,7 @@ def create_app(
     app.state.memory = memory
     app.state.audit_logger = memory.audit_logger
 
-    # engram fork: engraphy routes (raw embedding_only write, zero LLM)
+    # engram fork: raw embedding_only retain routes (zero LLM)
     from .engram_raw import register_engram_raw_routes
 
     register_engram_raw_routes(app)

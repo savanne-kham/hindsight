@@ -1,11 +1,4 @@
-"""engram fork: engraphy endpoint — raw embedding_only write, zero LLM.
-
-ENGRAPHY is the write action of the engram layer (Richard Semon's own term,
-1904: the process that inscribes an experience into the memory substrate —
-he also coined "engram" and "ecphory", the read-side cueing, reserved here
-for the recall expansion). Deliberately NOT called "retain": Hindsight's
-retain is the LLM fact-extraction pipeline; engraphy is its zero-LLM,
-verbatim counterpart.
+"""engram fork: raw embedding_only retain endpoint — zero LLM.
 
 Stores agent-session items verbatim (immutable text + server-side sha256)
 with an embedding computed by the API's resident embedding model, plus an
@@ -240,7 +233,7 @@ def _row_to_unit(row, *, hit_lines: set[int] | None = None, neighbor_max_chars: 
 def register_engram_raw_routes(app) -> None:
     @app.post(
         "/v1/engram/banks/{bank_id}/raw",
-        summary="engram engraphy (raw embedding_only write, zero LLM)",
+        summary="engram raw retain (embedding_only, zero LLM)",
         description=(
             "Stores items verbatim with server-side sha256, resident-model "
             "embedding and explicit search_vector. Synchronous — no async "
@@ -248,7 +241,7 @@ def register_engram_raw_routes(app) -> None:
         ),
         tags=["engram"],
     )
-    async def engram_engraph(bank_id: str, request: EngramRawRequest):
+    async def engram_raw_retain(bank_id: str, request: EngramRawRequest):
         memory = app.state.memory
         items = [item for item in request.items if item.text.strip()]
         if not items:
@@ -264,7 +257,7 @@ def register_engram_raw_routes(app) -> None:
         if config.text_search_extension != "native":
             raise HTTPException(
                 status_code=500,
-                detail="engram engraphy supports text_search_extension=native only",
+                detail="engram raw retain supports text_search_extension=native only",
             )
 
         texts = [item.text for item in items]
