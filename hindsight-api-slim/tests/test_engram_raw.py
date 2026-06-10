@@ -1,5 +1,5 @@
 """
-Tests for the engram raw retain endpoint and the document units sequence endpoint.
+Tests for the engram engraphy endpoint (raw write) and the document units sequence endpoint.
 
 Covers the engram-raw/v1 contract guarantees:
 - idempotent re-sends: units whose (document_id, line_index, sha256) already
